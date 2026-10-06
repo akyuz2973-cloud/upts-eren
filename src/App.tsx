@@ -23,6 +23,7 @@ import { ChampionSection } from './components/ChampionSection';
 import { DigitalSignageVitrin } from './components/DigitalSignageVitrin';
 import { DataEntryModal } from './components/DataEntryModal';
 import { BulkUploadModal } from './components/BulkUploadModal';
+import { loadVideoFromStorage } from './utils/videoStorage';
 import {
   Trophy,
   Tv,
@@ -104,10 +105,11 @@ export default function App() {
   // 15sn Otomatik Tur Modu State
   const [isAutoTourActive, setIsAutoTourActive] = useState<boolean>(true);
   const [tourSecondsRemaining, setTourSecondsRemaining] = useState<number>(TOUR_DURATION);
-  const [videoDurationSeconds, setVideoDurationSeconds] = useState<number>(15);
   const [championTourPhase, setChampionTourPhase] = useState<'announcement' | 'video'>('announcement');
-  const [championVideoRemaining, setChampionVideoRemaining] = useState<number>(15);
   const [tourPhaseLabel, setTourPhaseLabel] = useState<string>('');
+  const [customVideoUrl, setCustomVideoUrl] = useState<string | null>(null);
+  const [videoMode, setVideoMode] = useState<'animation' | 'custom'>('animation');
+  const [isFullscreenChampionVideo, setIsFullscreenChampionVideo] = useState<boolean>(false);
 
   const isPausedDueToModal =
     isSingleEntryOpen || isBulkUploadOpen || editingRecord !== null || isFullscreenVitrin;
@@ -132,30 +134,34 @@ export default function App() {
     }
   }, [productLines, vortexMachines, stationProductions, slogan]);
 
-  // 15 Saniyede Bir Adımları Dolaşma ve Şampiyonluk / Video Süresi Yönetimi
+  // Kalıcı olarak IndexedDB'ye kaydedilmiş kutlama videosunu başlangıçta yükle
   useEffect(() => {
-    if (!isAutoTourActive || isPausedDueToModal) return;
+    loadVideoFromStorage().then((saved) => {
+      if (saved && saved.url) {
+        setCustomVideoUrl(saved.url);
+        setVideoMode('custom');
+      }
+    });
+  }, []);
+
+  // 1. Standart Sekmeler (dashboard, matrix, vitrin) için 15sn Turu
+  useEffect(() => {
+    if (!isAutoTourActive || isPausedDueToModal || activeTab === 'champion') return;
 
     let animFrameId: number;
     const startTime = performance.now();
+    const stepDurationMs = TOUR_DURATION * 1000;
+    let lastReportedSec = -1;
 
-    // Şampiyon Vardiya ekranında: 15sn Şampiyonluk İlanı + Ayrı Video Süresi
-    const CHAMPION_ANNOUNCE_MS = 15000; // 15 saniye Vardiya Şampiyonu
-    const VIDEO_PLAY_MS = videoDurationSeconds * 1000; // 15 saniye Kutlama Videosu (15sn dışında)
-    const championTotalMs = CHAMPION_ANNOUNCE_MS + VIDEO_PLAY_MS;
-
-    const stepDurationMs = activeTab === 'champion' ? championTotalMs : TOUR_DURATION * 1000;
-
-    // Sekmeye ilk gelindiğinde tepeye sıfırla
     window.scrollTo({ top: 0, behavior: 'instant' });
 
     const tick = (now: number) => {
       const elapsed = now - startTime;
 
-      // 1. AYLIK MATRİS SEKMESİ: Tabloyu tamamiyle görmek için kademeli olarak aşağı aksın
+      // Aylık Matriste tabloyu tamamiyle görmek için kademeli olarak aşağı aksın
       if (activeTab === 'matrix') {
-        const holdTopMs = 1500; // İlk 1.5 saniye üst başlık sabit görünür
-        const flowEndMs = 13800; // 13.8 saniyeye kadar kademeli ve kesintisiz akar
+        const holdTopMs = 1500;
+        const flowEndMs = 13800;
 
         if (elapsed > holdTopMs && elapsed <= flowEndMs) {
           const scrollProgress = (elapsed - holdTopMs) / (flowEndMs - holdTopMs);
@@ -171,7 +177,6 @@ export default function App() {
             });
           }
         } else if (elapsed > flowEndMs) {
-          // Son saniyede tablonun en altı (Genel Toplamlar) net şekilde görünür
           const maxScroll = Math.max(
             0,
             document.documentElement.scrollHeight - window.innerHeight
@@ -180,70 +185,22 @@ export default function App() {
             window.scrollTo({ top: maxScroll, behavior: 'auto' });
           }
         }
+      }
 
-        const remainingSeconds = Math.max(0, Math.ceil((stepDurationMs - elapsed) / 1000));
+      const remainingSeconds = Math.max(0, Math.ceil((stepDurationMs - elapsed) / 1000));
+      if (remainingSeconds !== lastReportedSec) {
+        lastReportedSec = remainingSeconds;
         setTourSecondsRemaining(remainingSeconds);
-        setTourPhaseLabel('');
+      }
 
-        if (elapsed >= stepDurationMs) {
-          setActiveTab('champion');
-          setTourSecondsRemaining(TOUR_DURATION);
+      if (elapsed >= stepDurationMs) {
+        setActiveTab((currentTab) => {
+          const currentIndex = TOUR_STEPS.findIndex((s) => s.id === currentTab);
+          const nextIndex = (currentIndex + 1) % TOUR_STEPS.length;
           window.scrollTo({ top: 0, behavior: 'instant' });
-          return;
-        }
-      } else if (activeTab === 'champion') {
-        // 2. ŞAMPİYON VARDİYA SEKMESİ:
-        // Kullanıcı İsteği: "kutlama videosu süresi, vardiya şampiyonu kısmındaki 15 sn süre dışında ayrı video süresince gösterilsin"
-        if (elapsed < CHAMPION_ANNOUNCE_MS) {
-          // FAZ 1: Vardiya Şampiyonu 15 Saniyelik İlan Süresi
-          const remainingAnnounceSec = Math.max(0, Math.ceil((CHAMPION_ANNOUNCE_MS - elapsed) / 1000));
-          setTourSecondsRemaining(remainingAnnounceSec);
-          setChampionTourPhase('announcement');
-          setTourPhaseLabel('Şampiyon İlanı');
-        } else {
-          // FAZ 2: Kutlama Videosu Süresi (15 saniye DIŞINDA ayrı gösterilen video süresi)
-          const remainingVideoSec = Math.max(0, Math.ceil((championTotalMs - elapsed) / 1000));
-          setTourSecondsRemaining(remainingVideoSec);
-          setChampionVideoRemaining(remainingVideoSec);
-          setChampionTourPhase('video');
-          setTourPhaseLabel('Kutlama Videosu');
-
-          // 15 saniyelik şampiyonluk süresi tamamlandığı anda alttaki kutlama videosuna in ve oynat
-          if (elapsed >= CHAMPION_ANNOUNCE_MS && elapsed <= CHAMPION_ANNOUNCE_MS + 250) {
-            const videoElement = document.getElementById('champion-celebration-video');
-            if (videoElement) {
-              videoElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              const vid = videoElement.querySelector('video') as HTMLVideoElement | null;
-              if (vid) {
-                vid.play().catch(() => {});
-              }
-            }
-          }
-        }
-
-        // 15sn Vardiya Şampiyonu + Video Süresi bittiğinde bir sonraki sekmeye ('vitrin') geç
-        if (elapsed >= championTotalMs) {
-          setActiveTab('vitrin');
-          setTourSecondsRemaining(TOUR_DURATION);
-          setTourPhaseLabel('');
-          window.scrollTo({ top: 0, behavior: 'instant' });
-          return;
-        }
-      } else {
-        // Diğer sekmeler (dashboard, vitrin): Standart 15 saniye
-        const remainingSeconds = Math.max(0, Math.ceil((stepDurationMs - elapsed) / 1000));
-        setTourSecondsRemaining(remainingSeconds);
-        setTourPhaseLabel('');
-
-        if (elapsed >= stepDurationMs) {
-          setActiveTab((currentTab) => {
-            const currentIndex = TOUR_STEPS.findIndex((s) => s.id === currentTab);
-            const nextIndex = (currentIndex + 1) % TOUR_STEPS.length;
-            window.scrollTo({ top: 0, behavior: 'instant' });
-            return TOUR_STEPS[nextIndex].id;
-          });
-          return;
-        }
+          return TOUR_STEPS[nextIndex].id;
+        });
+        return;
       }
 
       animFrameId = requestAnimationFrame(tick);
@@ -256,10 +213,56 @@ export default function App() {
     };
   }, [isAutoTourActive, isPausedDueToModal, activeTab]);
 
+  // 2. Şampiyon Vardiya Adımı:
+  //    1. Şampiyon İlanı ve Konfeti (7s) -> Ekran başında tepeye odaklanır
+  //    2. 7 saniye sonra Kutlama Videosunu TAM EKRAN açar
+  //    3. Video tam ekran oynatılır, ASLA erken kesilmez ve TÜM VİDEO BİTTİKTEN SONRA sonraki bölüme (Vitrin) geçer
+  useEffect(() => {
+    if (!isAutoTourActive || activeTab !== 'champion' || isSingleEntryOpen || isBulkUploadOpen) return;
+
+    // Şampiyon Vardiya sekmesine gelindiğinde tepeye al
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    setChampionTourPhase('announcement');
+    setTourPhaseLabel('Şampiyon İlanı');
+    setTourSecondsRemaining(7);
+
+    let currentSec = 7;
+    const intervalTimer = setInterval(() => {
+      currentSec -= 1;
+      if (currentSec >= 0) {
+        setTourSecondsRemaining(currentSec);
+      }
+    }, 1000);
+
+    // 7 saniye sonra kutlama videosunu TAM EKRAN aç
+    const videoTransitionTimer = setTimeout(() => {
+      clearInterval(intervalTimer);
+      setChampionTourPhase('video');
+      setTourPhaseLabel('Kutlama Videosu');
+      setTourSecondsRemaining(0);
+      setIsFullscreenChampionVideo(true);
+    }, 7000);
+
+    return () => {
+      clearInterval(intervalTimer);
+      clearTimeout(videoTransitionTimer);
+    };
+  }, [isAutoTourActive, activeTab, isSingleEntryOpen, isBulkUploadOpen]);
+
   const handleManualTabChange = (tabId: string) => {
+    setIsFullscreenChampionVideo(false);
     setActiveTab(tabId);
     setTourSecondsRemaining(TOUR_DURATION);
+    setTourPhaseLabel('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleChampionVideoCompleted = () => {
+    setIsFullscreenChampionVideo(false);
+    setActiveTab('vitrin');
+    setTourSecondsRemaining(TOUR_DURATION);
+    setTourPhaseLabel('');
+    window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
   const handleNextTourStep = () => {
@@ -774,9 +777,13 @@ export default function App() {
               shiftWastes={shiftWastes}
               grandTotal={grandTotal}
               tourPhase={championTourPhase}
-              videoSecondsRemaining={championVideoRemaining}
-              videoTotalDuration={videoDurationSeconds}
-              onSetVideoDuration={(sec) => setVideoDurationSeconds(sec)}
+              isFullscreenVideo={isFullscreenChampionVideo}
+              setIsFullscreenVideo={setIsFullscreenChampionVideo}
+              onVideoCompleted={handleChampionVideoCompleted}
+              customVideoUrl={customVideoUrl}
+              setCustomVideoUrl={setCustomVideoUrl}
+              videoMode={videoMode}
+              setVideoMode={setVideoMode}
               isAutoTourActive={isAutoTourActive}
             />
           </div>

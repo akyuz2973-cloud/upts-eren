@@ -117,9 +117,16 @@ export const Header: React.FC<HeaderProps> = ({
                       {tourPhaseLabel || 'Turu Durdur'}
                     </span>
                     <span className="sm:hidden">Durdur</span>
-                    <span className="font-mono text-[11px] bg-amber-200/80 px-1.5 py-0.5 rounded text-amber-900 font-bold">
-                      {tourSecondsRemaining}s
-                    </span>
+                    {tourPhaseLabel === 'Kutlama Videosu' ? (
+                      <span className="font-mono text-[11px] bg-amber-200/90 px-1.5 py-0.5 rounded text-amber-950 font-bold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping" />
+                        <span>Video</span>
+                      </span>
+                    ) : (
+                      <span className="font-mono text-[11px] bg-amber-200/80 px-1.5 py-0.5 rounded text-amber-900 font-bold">
+                        {tourSecondsRemaining}s
+                      </span>
+                    )}
                   </>
                 ) : (
                   <>

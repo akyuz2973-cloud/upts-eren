@@ -5,17 +5,21 @@ import {
   Sparkles,
   Play,
   Pause,
-  RotateCcw,
   Upload,
-  Video,
-  Flame,
   Award,
   BarChart3,
   CheckCircle2,
-  Users,
-  Clock
+  Maximize2,
+  Minimize2,
+  ChevronRight,
+  Volume2,
+  VolumeX,
+  Trash2,
+  Film
 } from 'lucide-react';
 import { ShiftCode } from '../types';
+import { saveVideoToStorage, deleteVideoFromStorage } from '../utils/videoStorage';
+import { generateSampleCelebrationVideoBlob } from '../utils/sampleVideo';
 
 interface ChampionSectionProps {
   monthLabel: string;
@@ -32,9 +36,13 @@ interface ChampionSectionProps {
   };
   grandTotal: number;
   tourPhase?: 'announcement' | 'video';
-  videoSecondsRemaining?: number;
-  videoTotalDuration?: number;
-  onSetVideoDuration?: (sec: number) => void;
+  isFullscreenVideo?: boolean;
+  setIsFullscreenVideo?: (full: boolean) => void;
+  onVideoCompleted?: () => void;
+  customVideoUrl: string | null;
+  setCustomVideoUrl: (url: string | null) => void;
+  videoMode: 'animation' | 'custom';
+  setVideoMode: (mode: 'animation' | 'custom') => void;
   isAutoTourActive?: boolean;
 }
 
@@ -45,19 +53,29 @@ export const ChampionSection: React.FC<ChampionSectionProps> = ({
   shiftWastes,
   grandTotal,
   tourPhase = 'announcement',
-  videoSecondsRemaining = 15,
-  videoTotalDuration = 15,
-  onSetVideoDuration,
+  isFullscreenVideo = false,
+  setIsFullscreenVideo,
+  onVideoCompleted,
+  customVideoUrl,
+  setCustomVideoUrl,
+  videoMode,
+  setVideoMode,
   isAutoTourActive = true,
 }) => {
-  const [isPlayingAnimation, setIsPlayingAnimation] = useState(true);
-  const [customVideoUrl, setCustomVideoUrl] = useState<string | null>(null);
-  const [videoMode, setVideoMode] = useState<'animation' | 'custom'>('animation');
   const videoInputRef = useRef<HTMLInputElement>(null);
+  const fullscreenVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const [isGeneratingSample, setIsGeneratingSample] = useState(false);
+  const [videoDuration, setVideoDuration] = useState<number>(0);
+  const [videoCurrentTime, setVideoCurrentTime] = useState<number>(0);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [autoplayBlocked, setAutoplayBlocked] = useState<boolean>(false);
+  const [animationRemainingSec, setAnimationRemainingSec] = useState<number>(10);
+  const [uploadStatusMsg, setUploadStatusMsg] = useState<string | null>(null);
 
   const shiftNames: Record<ShiftCode, { name: string; hours: string; supervisor: string }> = {
     A: { name: '1. Vardiya', hours: '08:00 - 16:00', supervisor: 'Ahmet Yılmaz' },
-    B: { name: { name: '2. Vardiya', hours: '16:00 - 00:00', supervisor: 'Mehmet Demir' }.name, hours: '16:00 - 00:00', supervisor: 'Mehmet Demir' },
+    B: { name: '2. Vardiya', hours: '16:00 - 00:00', supervisor: 'Mehmet Demir' },
     C: { name: '3. Vardiya', hours: '00:00 - 08:00', supervisor: 'Hasan Kaya' },
   };
 
@@ -104,14 +122,132 @@ export const ChampionSection: React.FC<ChampionSectionProps> = ({
     return () => clearTimeout(timer);
   }, [leaderShift]);
 
-  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Handle ESC key for fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreenVideo && setIsFullscreenVideo) {
+        setIsFullscreenVideo(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreenVideo, setIsFullscreenVideo]);
+
+  // FULLSCREEN VIDEO PLAYBACK LOGIC
+  useEffect(() => {
+    if (isFullscreenVideo && videoMode === 'custom' && customVideoUrl) {
+      const vid = fullscreenVideoRef.current;
+      if (vid) {
+        vid.currentTime = 0;
+        vid.muted = false;
+        setIsMuted(false);
+        setAutoplayBlocked(false);
+
+        const playPromise = vid.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((err) => {
+            console.log('Unmuted autoplay blocked by browser policy, attempting muted fallback:', err);
+            vid.muted = true;
+            setIsMuted(true);
+            setAutoplayBlocked(true);
+            vid.play().catch(() => {});
+          });
+        }
+      }
+    }
+  }, [isFullscreenVideo, videoMode, customVideoUrl]);
+
+  // FULLSCREEN CELEBRATION ANIMATION TIMER (ONLY when animation mode is active)
+  useEffect(() => {
+    if (!isFullscreenVideo || videoMode !== 'animation') return;
+
+    setAnimationRemainingSec(10);
+    const interval = setInterval(() => {
+      setAnimationRemainingSec((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          if (setIsFullscreenVideo) setIsFullscreenVideo(false);
+          if (onVideoCompleted) onVideoCompleted();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isFullscreenVideo, videoMode, onVideoCompleted, setIsFullscreenVideo]);
+
+  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const url = URL.createObjectURL(file);
+      try {
+        const url = URL.createObjectURL(file);
+        setCustomVideoUrl(url);
+        setVideoMode('custom');
+        await saveVideoToStorage(file, file.name);
+        fireConfetti();
+        setUploadStatusMsg(`"${file.name}" yüklendi ve kalıcı olarak kaydedildi.`);
+        setTimeout(() => setUploadStatusMsg(null), 4000);
+      } catch (err) {
+        console.error('Error saving video to storage:', err);
+      }
+    }
+  };
+
+  const handleUseSampleVideo = async () => {
+    try {
+      setIsGeneratingSample(true);
+      const blob = await generateSampleCelebrationVideoBlob(leaderShift, monthLabel);
+      const url = URL.createObjectURL(blob);
       setCustomVideoUrl(url);
       setVideoMode('custom');
+      await saveVideoToStorage(blob, 'ornek_kutlama_videosu.webm');
       fireConfetti();
+      setUploadStatusMsg('Örnek şampiyonluk videosu hazırlandı ve kaydedildi.');
+      setTimeout(() => setUploadStatusMsg(null), 4000);
+    } catch (err) {
+      console.error('Error creating sample video:', err);
+    } finally {
+      setIsGeneratingSample(false);
     }
+  };
+
+  const handleRemoveVideo = async () => {
+    try {
+      await deleteVideoFromStorage();
+      setCustomVideoUrl(null);
+      setVideoMode('animation');
+      setUploadStatusMsg('Özel video kaldırıldı, animasyon moduna geçildi.');
+      setTimeout(() => setUploadStatusMsg(null), 3000);
+    } catch (err) {
+      console.error('Error removing video:', err);
+    }
+  };
+
+  const handleFullscreenVideoEnded = () => {
+    // Only fires when the fullscreen video finishes its full playback
+    if (setIsFullscreenVideo) {
+      setIsFullscreenVideo(false);
+    }
+    if (onVideoCompleted) {
+      onVideoCompleted();
+    }
+  };
+
+  const toggleSound = () => {
+    const vid = fullscreenVideoRef.current;
+    if (vid) {
+      vid.muted = !vid.muted;
+      setIsMuted(vid.muted);
+      if (!vid.muted) setAutoplayBlocked(false);
+    }
+  };
+
+  const formatTime = (seconds: number) => {
+    if (isNaN(seconds) || seconds <= 0) return '00:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
   // Bar Chart calculations
@@ -270,6 +406,17 @@ export const ChampionSection: React.FC<ChampionSectionProps> = ({
       <div id="champion-celebration-video" className="grid grid-cols-1 lg:grid-cols-12 gap-6 scroll-mt-20">
         {/* Left: Video / Celebration Animation Player (7 cols) */}
         <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs flex flex-col">
+          {/* Status Toast Banner if video action occurred */}
+          {uploadStatusMsg && (
+            <div className="bg-emerald-600 text-white px-4 py-2 text-xs font-semibold flex items-center justify-between animate-in fade-in">
+              <span className="flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{uploadStatusMsg}</span>
+              </span>
+              <button onClick={() => setUploadStatusMsg(null)} className="text-white/80 hover:text-white font-bold">×</button>
+            </div>
+          )}
+
           <div className="p-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
@@ -280,30 +427,23 @@ export const ChampionSection: React.FC<ChampionSectionProps> = ({
                   <h3 className="text-sm font-bold text-slate-900">
                     Tebrikler & Şampiyonluk Videosu
                   </h3>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 rounded-md">
-                    Video Süresi: {videoTotalDuration} sn
+                  <span className={`px-2 py-0.5 text-[10px] font-bold rounded-md border ${
+                    videoMode === 'custom' && customVideoUrl
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                      : 'bg-amber-100 text-amber-900 border-amber-300'
+                  }`}>
+                    {videoMode === 'custom' && customVideoUrl ? '🎬 Özel Video Hazır' : '✨ Kutlama Animasyonu'}
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Vardiya Şampiyonu 15 sn süresi dışında, ayrıca video süresince ({videoTotalDuration} sn) gösterilir
+                  Şampiyonluk ilanı sonrasında video tam ekran açılır ve tüm video bittikten sonra sonraki bölüme geçer
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setVideoMode('animation')}
-                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-                  videoMode === 'animation'
-                    ? 'bg-blue-600 text-white'
-                    : 'text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                Animasyon
-              </button>
-
-              <label className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-md cursor-pointer transition-colors">
-                <Upload className="w-3 h-3" />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <label className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-md cursor-pointer transition-colors shadow-2xs">
+                <Upload className="w-3.5 h-3.5" />
                 <span>Video Yükle</span>
                 <input
                   type="file"
@@ -313,73 +453,60 @@ export const ChampionSection: React.FC<ChampionSectionProps> = ({
                   onChange={handleVideoUpload}
                 />
               </label>
+
+              <button
+                onClick={handleUseSampleVideo}
+                disabled={isGeneratingSample}
+                className="flex items-center gap-1 px-2 py-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-md cursor-pointer transition-colors"
+                title="Sistemde hazır örnek şampiyonluk videosu oluşturur"
+              >
+                <Film className="w-3.5 h-3.5 text-amber-600" />
+                <span>{isGeneratingSample ? 'Hazırlanıyor...' : 'Örnek Video'}</span>
+              </button>
+
+              {videoMode === 'custom' && customVideoUrl && (
+                <button
+                  onClick={handleRemoveVideo}
+                  className="p-1 text-xs text-rose-600 hover:bg-rose-50 rounded border border-rose-200 cursor-pointer"
+                  title="Videoyu Kaldır ve Animasyona Dön"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+
+              <button
+                onClick={() => setIsFullscreenVideo && setIsFullscreenVideo(true)}
+                className="flex items-center gap-1 px-3 py-1 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-md cursor-pointer transition-colors shadow-xs"
+                title="Videoyu Tam Ekran Başlat"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span>Tam Ekran Başlat</span>
+              </button>
             </div>
           </div>
 
-          {/* Live Video Phase Indicator Bar */}
-          {isAutoTourActive && (
-            <div className={`px-4 py-2 text-xs font-semibold flex items-center justify-between border-b ${
-              tourPhase === 'video'
-                ? 'bg-amber-500/10 text-amber-900 border-amber-200'
-                : 'bg-slate-50 text-slate-600 border-slate-200'
-            }`}>
-              <div className="flex items-center gap-2">
-                {tourPhase === 'video' ? (
-                  <>
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="font-bold text-slate-900">🎬 Kutlama Videosu Oynatılıyor:</span>
-                    <span className="font-mono text-amber-900 font-bold bg-amber-200/80 px-1.5 py-0.5 rounded">
-                      Kalan: {videoSecondsRemaining}s / {videoTotalDuration}s
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <Clock className="w-3.5 h-3.5 text-slate-400" />
-                    <span>Şampiyonluk ilanı 15sn tamamlandıktan sonra kutlama videosu süresi başlayacaktır</span>
-                  </>
-                )}
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-slate-500 hidden sm:inline">Süre:</span>
-                {[10, 15, 20].map((sec) => (
-                  <button
-                    key={sec}
-                    onClick={() => onSetVideoDuration && onSetVideoDuration(sec)}
-                    className={`px-1.5 py-0.5 text-[10px] font-bold rounded cursor-pointer ${
-                      videoTotalDuration === sec
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
-                    }`}
-                    title={`Video Süresini ${sec} saniye yap`}
-                  >
-                    {sec}s
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Player viewport */}
+          {/* Player viewport: Önizleme ekranı (Arka planda kendi kendine bitmez, turu erken sonlandırmaz) */}
           <div className="relative aspect-video bg-slate-950 flex items-center justify-center overflow-hidden">
             {videoMode === 'custom' && customVideoUrl ? (
-              <video
-                ref={(el) => {
-                  if (el) {
-                    el.play().catch(() => {});
-                  }
-                }}
-                onLoadedMetadata={(e) => {
-                  const dur = Math.round(e.currentTarget.duration);
-                  if (dur > 0 && onSetVideoDuration) {
-                    onSetVideoDuration(dur);
-                  }
-                }}
-                src={customVideoUrl}
-                controls
-                autoPlay
-                loop
-                className="w-full h-full object-cover"
-              />
+              <div className="relative w-full h-full group">
+                <video
+                  key={`preview-${customVideoUrl}`}
+                  src={customVideoUrl}
+                  controls
+                  playsInline
+                  className="w-full h-full object-cover"
+                />
+                {/* Overlay hover launch button */}
+                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                  <button
+                    onClick={() => setIsFullscreenVideo && setIsFullscreenVideo(true)}
+                    className="pointer-events-auto px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs rounded-xl flex items-center gap-2 shadow-2xl transition-transform transform hover:scale-105 cursor-pointer"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                    <span>Videoyu Tam Ekran Başlat</span>
+                  </button>
+                </div>
+              </div>
             ) : (
               /* Custom High-Fidelity Celebration Animation */
               <div className="relative w-full h-full flex flex-col items-center justify-center text-center p-6 bg-gradient-to-b from-slate-900 via-indigo-950 to-slate-950 overflow-hidden select-none">
@@ -426,28 +553,34 @@ export const ChampionSection: React.FC<ChampionSectionProps> = ({
           </div>
 
           {/* Video bottom controls bar */}
-          <div className="p-3 bg-slate-100 border-t border-slate-200 flex items-center justify-between text-xs">
-            <div className="flex items-center gap-3">
+          <div className="p-3 bg-slate-100 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2">
               <button
                 onClick={fireConfetti}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg transition-colors shadow-xs cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5 fill-slate-950" />
-                <span>Konfetiyi Tekrarla</span>
+                <span>Konfeti Patlat</span>
+              </button>
+
+              <button
+                onClick={() => setIsFullscreenVideo && setIsFullscreenVideo(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-colors shadow-xs cursor-pointer"
+              >
+                <Play className="w-3.5 h-3.5 fill-white" />
+                <span>Tam Ekran Oynat</span>
               </button>
             </div>
 
-            {videoMode === 'custom' && (
-              <button
-                onClick={() => {
-                  setCustomVideoUrl(null);
-                  setVideoMode('animation');
-                }}
-                className="text-xs text-rose-600 hover:underline"
-              >
-                Varsayılan Animasyona Dön
-              </button>
-            )}
+            <div className="text-[11px] text-slate-500 font-medium">
+              {videoMode === 'custom' && customVideoUrl ? (
+                <span className="text-emerald-700 font-semibold">
+                  ✓ Kalıcı video yüklü (Turda tam ekran oynatılır)
+                </span>
+              ) : (
+                <span>MP4 veya WebM formatında video yükleyebilirsiniz</span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -576,6 +709,173 @@ export const ChampionSection: React.FC<ChampionSectionProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 3. FULLSCREEN CELEBRATION THEATER MODAL (Tek ve Gerçek Oynatma Noktası) */}
+      {isFullscreenVideo && (
+        <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col justify-between p-4 sm:p-6 animate-in fade-in duration-300">
+          {/* Fullscreen Header */}
+          <div className="flex items-center justify-between text-white pb-3 border-b border-white/10 z-20">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center font-bold shadow-lg shrink-0">
+                <Trophy className="w-5 h-5 fill-slate-950" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base sm:text-lg font-black text-amber-400">
+                    Şampiyonluk Kutlama Videosu · Vardiya {leaderShift}
+                  </h2>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-400 text-slate-950 rounded-md">
+                    TAM EKRAN
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300">
+                  {videoMode === 'custom' && customVideoUrl
+                    ? 'Kutlama videosu sonuna kadar oynatılıyor. Video bittiğinde otomatik sonraki bölüme geçilir.'
+                    : 'Kutlama animasyonu oynatılıyor.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Audio toggle button if unmuted autoplay was blocked */}
+              {videoMode === 'custom' && customVideoUrl && (
+                <button
+                  onClick={toggleSound}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-md ${
+                    autoplayBlocked || isMuted
+                      ? 'bg-amber-500 text-slate-950 hover:bg-amber-400 ring-2 ring-white/50 animate-pulse'
+                      : 'bg-white/10 hover:bg-white/20 text-white'
+                  }`}
+                  title={isMuted ? 'Sesi Aç' : 'Sesi Kapat'}
+                >
+                  {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                  <span>{isMuted ? 'Sesi Aç' : 'Ses Açık'}</span>
+                </button>
+              )}
+
+              <button
+                onClick={handleFullscreenVideoEnded}
+                className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shadow-md"
+                title="Videoyu beklemeden hemen sonraki bölüme geç"
+              >
+                <span>Sonrakine Geç (Vitrin)</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+
+              <button
+                onClick={() => setIsFullscreenVideo && setIsFullscreenVideo(false)}
+                className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors cursor-pointer"
+                title="Tam Ekrandan Çık (ESC)"
+              >
+                <Minimize2 className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Fullscreen Video Viewport */}
+          <div className="flex-1 w-full max-w-6xl mx-auto my-auto aspect-video max-h-[78vh] flex items-center justify-center relative overflow-hidden rounded-2xl shadow-2xl bg-black border border-white/10">
+            {videoMode === 'custom' && customVideoUrl ? (
+              <div className="relative w-full h-full flex items-center justify-center">
+                <video
+                  ref={fullscreenVideoRef}
+                  key={`fullscreen-${customVideoUrl}`}
+                  src={customVideoUrl}
+                  controls
+                  playsInline
+                  onEnded={handleFullscreenVideoEnded}
+                  onTimeUpdate={(e) => {
+                    const target = e.currentTarget;
+                    setVideoCurrentTime(target.currentTime);
+                    if (target.duration) setVideoDuration(target.duration);
+                  }}
+                  onLoadedMetadata={(e) => {
+                    if (e.currentTarget.duration) {
+                      setVideoDuration(e.currentTarget.duration);
+                    }
+                  }}
+                  className="w-full h-full object-contain"
+                />
+
+                {/* Autoplay blocked banner */}
+                {autoplayBlocked && (
+                  <div
+                    onClick={toggleSound}
+                    className="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-black text-xs px-4 py-2 rounded-full shadow-2xl flex items-center gap-2 cursor-pointer hover:bg-amber-400 transition-transform hover:scale-105 z-30"
+                  >
+                    <VolumeX className="w-4 h-4 animate-bounce" />
+                    <span>Tarayıcı sesi susturdu - 🔊 Sesi Açmak İçin Buraya Tıklayın</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="relative w-full h-full flex flex-col items-center justify-center text-center p-6 bg-gradient-to-b from-slate-900 via-indigo-950 to-slate-950 overflow-hidden select-none">
+                {/* Floating particle orbs */}
+                <div className="absolute inset-0 opacity-40">
+                  <div className="absolute top-1/4 left-1/4 w-40 h-40 bg-amber-500/30 rounded-full blur-3xl animate-pulse" />
+                  <div className="absolute bottom-1/4 right-1/4 w-48 h-48 bg-blue-500/30 rounded-full blur-3xl animate-pulse delay-1000" />
+                </div>
+
+                {/* Animated 3D Trophy Graphic */}
+                <div className="relative z-10 mb-4 flex flex-col items-center">
+                  <div className="w-28 h-28 sm:w-36 sm:h-36 rounded-full bg-gradient-to-tr from-amber-600 via-amber-400 to-yellow-200 p-1.5 shadow-2xl shadow-amber-500/50 animate-bounce duration-1000">
+                    <div className="w-full h-full rounded-full bg-slate-900/90 flex items-center justify-center border-2 border-amber-300">
+                      <Trophy className="w-16 h-16 sm:w-20 sm:h-20 fill-amber-400 text-amber-300" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Congratulations text */}
+                <div className="relative z-10 space-y-2">
+                  <div className="inline-block text-xs font-black tracking-widest text-amber-400 uppercase bg-amber-950/80 border border-amber-500/50 px-4 py-1 rounded-full shadow-md">
+                    {monthLabel.toUpperCase()} AYI 1.Sİ
+                  </div>
+                  <h3 className="text-2xl sm:text-4xl md:text-5xl font-black text-white tracking-tight">
+                    TEBRİKLER VARDİYA {leaderShift}!
+                  </h3>
+                  <p className="text-sm sm:text-lg text-slate-300 font-mono">
+                    {leaderKg.toLocaleString('tr-TR')} KG Üretim ile Fabrika Zirvesinde!
+                  </p>
+                </div>
+
+                {/* Bottom ticker banner in animation */}
+                <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between text-xs text-slate-400 border-t border-white/10 pt-3">
+                  <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Üstün Randıman & Minimum Fire</span>
+                  </span>
+                  <span className="text-amber-400 font-bold font-mono text-sm">
+                    +{diffToSecond.toLocaleString('tr-TR')} KG Fark
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Fullscreen Footer: Canlı İlerleme ve Süre Göstergesi */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-400 pt-3 border-t border-white/10 z-20">
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-2 text-emerald-400 font-semibold">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                <span>
+                  {videoMode === 'custom' && customVideoUrl
+                    ? 'Kutlama Videosu Oynatılıyor... (Tüm video bittikten sonra sonraki bölüme geçilecek)'
+                    : `Kutlama Animasyonu (${animationRemainingSec}s sonra sonraki bölüme geçilecek)`}
+                </span>
+              </span>
+
+              {videoMode === 'custom' && videoDuration > 0 && (
+                <span className="font-mono text-amber-400 bg-white/10 px-2 py-0.5 rounded text-[11px] font-bold">
+                  {formatTime(videoCurrentTime)} / {formatTime(videoDuration)}
+                </span>
+              )}
+            </div>
+
+            <span className="text-slate-300 font-medium">
+              Eren Tekstil · {monthLabel} Şampiyonu Vardiya {leaderShift} ({leaderKg.toLocaleString('tr-TR')} KG)
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
