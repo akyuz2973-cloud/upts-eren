@@ -1,0 +1,6 @@
+{
+  "name": "İplik Üretim Takip ve Vardiya Yönetim Sistemi",
+  "description": "Eren Tekstil iplik üretim takip, vardiya yönetimi, aylık üretim matrisi, ayın şampiyon vardiyası tebrik ekranı ve dinamik dijital vitrin panosu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
